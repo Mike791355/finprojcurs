@@ -1,25 +1,28 @@
+import tensorflow as tf 
 import sys
 import datetime
-import tensorflow as tf
 import numpy as np
 import pickle
 from PyQt6 import QtWidgets, QtSql, QtCore
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from PyQt6.QtSql import QSqlTableModel
+from PyQt6.QtWidgets import QHeaderView
+from PyQt6.QtCore import Qt
 
-from finaifull import Ui_MainWindow
+from finaiui import Ui_MainWindow
 from bdfinai import bdmain
 from inoper import InUi_Dialog
 from outoper import OutUi_Dialog
 from in_oper_del import In_Ui_Del_Dialog
 from out_oper_del import Out_Ui_Del_Dialog
 from goal_fix import goalfixui_dialog
-from Opt_check import Ui_opt_check 
+from Opt_check import Ui_opt_check
+from PyQt6.QtCore import QDate
 
 
-with open(r'-', 'rb') as f:  #в кавычках путь к scaler
+with open(r'-', 'rb') as f:   #вместо "-"  ваш путь к scaler
     scaler = pickle.load(f)
-model = tf.keras.models.load_model(r'-', compile=False) # в кавычкх должен быть путь к model.h5 
+model = tf.keras.models.load_model(r'-', compile=False) #вместо "-" ваш путь к model 
 
 def get_previous_month(month_str):
     dt = datetime.datetime.strptime(month_str, "%m.%Y")
@@ -43,8 +46,7 @@ def getlmt(db):
     q = db.execute_qr(query, [])
     if q and q.next():
         return q.value(0)
-    else:
-        return None
+    return datetime.datetime.now().strftime("%m.%Y")
 
 def getinoutm(db, month_str):
     income_sql = """
@@ -53,12 +55,12 @@ def getinoutm(db, month_str):
         WHERE SUBSTR(Date, 4, 7) = ? AND TrType = 'Income'
     """
     income = 0.0
-    inq = db.execute_qr(income_sql, [month_str])
-    if inq and inq.next():
-        inc_val = inq.value(0)
+    income_query = db.execute_qr(income_sql, [month_str])
+    if income_query and income_query.next():
+        inc_val = income_query.value(0)
         income = 0.0 if (inc_val is None or inc_val == '') else float(inc_val)
     
-    exp_ctg = [
+    expense_categories = [
         "Еда",
         "Здоровье и фитнес",
         "Ком.платежи и сборы",
@@ -74,17 +76,17 @@ def getinoutm(db, month_str):
         FROM transactions
         WHERE SUBSTR(Date, 4, 7) = ? AND TrType = 'Outcome' AND Category = ?
     """
-    for category in exp_ctg:
-        qout = db.execute_qr(outcome_sql, [month_str, category])
+    for category in expense_categories:
+        query_out = db.execute_qr(outcome_sql, [month_str, category])
         outcome_val = 0.0
-        if qout and qout.next():
-            out_val = qout.value(0)
+        if query_out and query_out.next():
+            out_val = query_out.value(0)
             outcome_val = 0.0 if (out_val is None or out_val == '') else float(out_val)
         outcomes.append(outcome_val)
     
-    return income, outcomes, exp_ctg
+    return income, outcomes, expense_categories
 
-ltm = None
+LAST_TRAINED_MONTH = None
 
 class finlogic(QMainWindow):
     def __init__(self):
@@ -92,8 +94,8 @@ class finlogic(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self.conn = bdmain()
-        global ltm
-        ltm = getlmt(self.conn)
+        global LAST_TRAINED_MONTH
+        LAST_TRAINED_MONTH = getlmt(self.conn)
         self.reload_data()
 
         self.ui.intrans.clicked.connect(self.inoper_w)
@@ -154,21 +156,30 @@ class finlogic(QMainWindow):
             self.ui.enj_spent.setText(f"Потрачено: {outcomes[enj_index]} ₽")
         except ValueError:
             self.ui.enj_spent.setText("Потрачено: 0 ₽")
+        try:
+            enj_index = expense_categories.index("Другое")
+            self.ui.enj_spent.setText(f"Потрачено: {outcomes[enj_index]} ₽")
+        except ValueError:
+            self.ui.enj_spent.setText("Потрачено: 0 ₽")
         self.ui.nameoutput.setText(self.conn.bdgoal_name())
         self.ui.dateoutput.setText(self.conn.bdgoal_date())
         self.ui.sumoutput.setText(self.conn.bdgoal_amount())
         self.check_and_finetune()
-        self.load_transactions()
+        balance = self.conn.total_balance()
+        self.ui.label.setText(f"Текущий бюджет:\n{balance} ₽")
+        self.load_transactions()  
 
     def load_transactions(self):
         model = QSqlTableModel(self)
         model.setTable("transactions")
         model.setEditStrategy(QSqlTableModel.EditStrategy.OnFieldChange)
+        model.setSort(0, Qt.SortOrder.DescendingOrder)
         model.select()
         self.ui.trans_data.setModel(model)
+        header = self.ui.trans_data.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
     def update_incomes_page(self):
-        
         try:
             main_income = float(self.ui.mainincomeline.text())
         except:
@@ -185,13 +196,11 @@ class finlogic(QMainWindow):
         self.ui.label_21.setText(f"Основной Доход; план: {main_income:.2f} руб.")
         self.ui.label_22.setText(f"Пассивный Доход и Соц.выплаты; план: {sec_income:.2f} руб.")
         self.ui.label_26.setText(f"Другое; план: {oth_income:.2f} руб.")
-        QtWidgets.QMessageBox.information(self, "Доход", "Данные доходов обновлены в заголовках.")
 
     def update_expenses_page(self):
-
         current_month = getlmt(self.conn)
         if current_month is None:
-            current_month = "01.2000"
+            current_month = "01.1970"
         _, outcomes, expense_categories = getinoutm(self.conn, current_month)
         mapping = {
             "Ком.платежи и сборы": (self.ui.bills_spent, self.ui.bills_line),
@@ -215,12 +224,12 @@ class finlogic(QMainWindow):
             except:
                 budget = 0.0
             label_widget.setText(f"Потрачено: {spent:.2f} ₽  Бюджет: {budget:.2f} ₽")
-        QtWidgets.QMessageBox.information(self, "Бюджет", "Данные бюджета обновлены на странице расходов.")
 
     def inoper_w(self):
         self.new_window = QtWidgets.QDialog()
         self.ui_window = InUi_Dialog()
         self.ui_window.setupUi(self.new_window)
+        self.ui_window.intran_date.setDate(QDate.currentDate())
         self.new_window.show()
         self.tr = "Income"
         self.ui_window.intr_confirm.clicked.connect(self.add_new_transaction)
@@ -229,6 +238,7 @@ class finlogic(QMainWindow):
         self.new_window = QtWidgets.QDialog()
         self.ui_window = OutUi_Dialog()
         self.ui_window.setupUi(self.new_window)
+        self.ui_window.outtr_date.setDate(QDate.currentDate())
         self.new_window.show()
         self.tr = "Outcome"
         self.ui_window.outtr_confirm.clicked.connect(self.add_new_transaction)
@@ -263,6 +273,7 @@ class finlogic(QMainWindow):
         self.new_window = QtWidgets.QDialog()
         self.ui_window = goalfixui_dialog()
         self.ui_window.setupUi(self.new_window)
+        self.ui_window.goaldate.setDate(QDate.currentDate())
         self.new_window.show()
         self.ui_window.goalsetbtn.clicked.connect(
             lambda: (
@@ -276,6 +287,7 @@ class finlogic(QMainWindow):
             )
         )
 
+
     def add_new_transaction(self):
         if self.tr == "Income":
             date = self.ui_window.intran_date.text()
@@ -284,6 +296,8 @@ class finlogic(QMainWindow):
             balance = self.ui_window.intran_sum.text()
             tr_type = self.tr
             new_id = self.conn.add_new_transaction_query(tr_type, category, balance, description, date)
+            if new_id is not None:
+                print(f"Новая транзакция добавлена. ID = {new_id}, Сумма = {balance}")
             self.reload_data()
             self.new_window.close()
         elif self.tr == "Outcome":
@@ -293,6 +307,8 @@ class finlogic(QMainWindow):
             balance = self.ui_window.outtran_sum.text()
             tr_type = self.tr
             new_id = self.conn.add_new_transaction_query(tr_type, category, balance, description, date)
+            if new_id is not None:
+                print(f"Новая транзакция добавлена. ID = {new_id}, Сумма = {balance}")
             self.reload_data()
             self.new_window.close()
 
@@ -302,7 +318,7 @@ class finlogic(QMainWindow):
         if opt_type == 1:
             goal = self.conn.get_goal()
             if goal is None:
-                QtWidgets.QMessageBox.warning(self, "Ошибка", "цели нет")
+                QtWidgets.QMessageBox.warning(self, "Ошибка", "Цель не задана!")
                 return
             g_amount = float(goal["g_amount"])
             raw_date = str(goal["g_date"]).strip()
@@ -320,12 +336,17 @@ class finlogic(QMainWindow):
                 except Exception:
                     continue
             if not parsed:
+                QtWidgets.QMessageBox.warning(self, "Ошибка", "Неверный формат даты цели! Ожидается MM.YYYY, MM/YYYY или MM-YYYY")
                 return
             current_month = getlmt(self.conn)
-            dt_current = datetime.datetime.strptime(current_month, "%m.%Y")
+            try:
+                dt_current = datetime.datetime.strptime(current_month, "%m.%Y")
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Ошибка", f"Неверный формат текущего месяца: {e}")
+                return
             remaining_months = (goal_date.year - dt_current.year) * 12 + (goal_date.month - dt_current.month) + 1
             if remaining_months <= 0:
-                QtWidgets.QMessageBox.warning(self, "Ошибка", "Дата прошла")
+                QtWidgets.QMessageBox.warning(self, "Ошибка", "Целевая дата уже прошла!")
                 return
             target_reduction = g_amount / remaining_months
             print(f"Тип оптимизации 'Выбранная цель': g_amount = {g_amount}, оставшихся месяцев = {remaining_months}, target_reduction = {target_reduction:.2f}")
@@ -333,12 +354,12 @@ class finlogic(QMainWindow):
             try:
                 target_reduction = float(self.ui.opt_sum_line.text())
             except ValueError:
-                QtWidgets.QMessageBox.warning(self, "ошибка", "неверно введена сумма")
+                QtWidgets.QMessageBox.warning(self, "Ошибка", "Некорректное значение целевой экономии!")
                 return
 
         month_query = getlmt(self.conn)
         if month_query is None:
-            QtWidgets.QMessageBox.warning(self, "ошибка", "транз. нет")
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Нет данных по транзакциям!")
             return
 
         income, outcomes, expense_categories = getinoutm(self.conn, month_query)
@@ -352,6 +373,7 @@ class finlogic(QMainWindow):
             predictions = model(x_scaled_tf)
         grads = tape.gradient(predictions, x_raw_tf)
         if grads is None:
+            QtWidgets.QMessageBox.warning(self, "Ошибка", "Не удалось вычислить градиенты!")
             return
         grads = grads.numpy()[0]
         expense_indices = list(range(1, len(expense_categories)+1))
@@ -385,10 +407,13 @@ class finlogic(QMainWindow):
                 6: "Подписки",
                 7: "Покупки",
                 8: "Транспорт",
-                9: "Путешествия"
+                9: "Путешествия",
+                10: "Развлечения"
             }
             exclude_category = mapping.get(opt_type, None)
-        
+            if exclude_category:
+                print(f"Тип оптимизации: повышаем бюджет на {exclude_category} (исключаем сокращение этой категории).")
+
         remaining = target_reduction
         recommendations_dict = {cat: 0.0 for cat in expense_categories}
         for cat, eff, current in efficiency_list:
@@ -431,6 +456,11 @@ class finlogic(QMainWindow):
             cell_text = f"{percent_cut:.2f}% ({recommended_cut:.2f} руб.)"
             item = QtWidgets.QTableWidgetItem(cell_text)
             self.ui.tableWidget.setItem(0, col_index, item)
+        QtWidgets.QMessageBox.information(
+            self, "Оптимизация",
+            f"Оптимизация выполнена для месяца {month_query}.\n"
+            f"Остаток нераспределённой суммы: {remaining:.2f} руб."
+        )
 
     def opt_check_w(self):
         self.feedback_window = QtWidgets.QDialog()
@@ -439,7 +469,7 @@ class finlogic(QMainWindow):
         self.feedback_window.show()
         self.opt_ui.opt_good.clicked.connect(lambda: self.oper_fb(True))
         self.opt_ui.opt_bad.clicked.connect(lambda: self.oper_fb(False))
-    
+
     def oper_fb(self, positive):
         current_date = datetime.datetime.now().strftime("%Y%m%d")
         recommendation = "Оптимизация"
@@ -449,6 +479,8 @@ class finlogic(QMainWindow):
             comment = self.opt_ui.opt_comment.text()
         if self.conn.save_feedback(recommendation, user_rating, comment, current_date):
             print("Обратная связь сохранена.")
+        else:
+            print("Ошибка сохранения обратной связи.")
         self.reload_data()
         self.feedback_window.close()
 
@@ -457,40 +489,48 @@ class finlogic(QMainWindow):
         X = np.array([[income] + outcomes], dtype=np.float32)
         base_y = income - sum(outcomes)
         y = np.array([base_y], dtype=np.float32)
-        fb_l = self.conn.get_all_feedback()
-        dt = datetime.datetime.strptime(month_str, "%m.%Y")
-        fb_m = dt.strftime("%Y%m")
+        feedback_list = self.conn.get_all_feedback()
+        try:
+            dt = datetime.datetime.strptime(month_str, "%m.%Y")
+            feedback_month = dt.strftime("%Y%m")
+        except Exception as e:
+            print("Ошибка преобразования даты для обратной связи:", e)
+            feedback_month = ""
         ratings = []
-        for fb in fb_l:
-            if str(fb["Date"]).startswith(fb_m):
+        for fb in feedback_list:
+            if str(fb["Date"]).startswith(feedback_month):
                 ratings.append(fb["user_rating"])
         if ratings:
             avg_rating = sum(ratings) / len(ratings)
             sample_weight = 1 + (5 - avg_rating)
+            print(f"Обратная связь за месяц {month_str}: средний рейтинг = {avg_rating:.2f}, sample_weight = {sample_weight:.2f}")
         else:
             sample_weight = 1.0
         sw = np.array([sample_weight], dtype=np.float32)
         return X, y, sw
 
     def check_and_finetune(self):
-        global ltm
+        global LAST_TRAINED_MONTH
         new_month = getlmt(self.conn)
         if new_month is None:
             return
         try:
             dt_new = datetime.datetime.strptime(new_month, "%m.%Y")
-            dt_last = datetime.datetime.strptime(ltm, "%m.%Y")
+            dt_last = datetime.datetime.strptime(LAST_TRAINED_MONTH, "%m.%Y")
         except Exception as e:
-            print("проблема с датами:", e)
+            print("Ошибка преобразования дат:", e)
             return
         if dt_new > dt_last:
             training_month = get_previous_month(new_month)
-            print(f"Дообучаем на {training_month}.")
+            print(f"Обнаружен новый месяц: {new_month}. Запускаем дообучение на данных за месяц {training_month}.")
             X, y, sw = self.prepftd(training_month)
             model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
                           loss='mean_squared_error')
             history = model.fit(X, y, sample_weight=sw, epochs=5, verbose=1)
-            ltm = new_month
+            LAST_TRAINED_MONTH = new_month
+            print("Модель дообучена на данных за месяц", training_month)
+        else:
+            print("Новый месяц не обнаружен. Дообучение не требуется.")
 
     def reload_data_and_check(self):
         self.reload_data()
@@ -500,4 +540,5 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = finlogic()
     window.show()
+    window.conn.clear_database()
     sys.exit(app.exec())
